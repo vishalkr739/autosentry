@@ -13,8 +13,11 @@ class AwsSecretsManagerProvider(SecretsProvider):
 
     def get_secret_version(self, name: str) -> str | None:
         response = self._client.describe_secret(SecretId=name)
-        return response["VersionIdsToStages"] and next(
-            vid
-            for vid, stages in response["VersionIdsToStages"].items()
-            if "AWSCURRENT" in stages
+        return next(
+            (
+                vid
+                for vid, stages in response["VersionIdsToStages"].items()
+                if "AWSCURRENT" in stages
+            ),
+            None,
         )

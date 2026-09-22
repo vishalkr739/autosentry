@@ -1,5 +1,7 @@
 import pytest
+from unittest.mock import patch, MagicMock
 from autosentry_agent.secrets.env_provider import EnvSecretsProvider
+from autosentry_agent.secrets.aws_provider import AwsSecretsManagerProvider
 from autosentry_agent.config import get_secrets_provider, SecretsBackendError
 
 def test_env_provider_reads_value(monkeypatch):
@@ -26,3 +28,20 @@ def test_factory_returns_env_provider_by_default(monkeypatch):
     monkeypatch.setenv("SECRETS_BACKEND", "env")
     provider = get_secrets_provider()
     assert isinstance(provider, EnvSecretsProvider)
+
+@patch('autosentry_agent.secrets.aws_provider.boto3.client')
+def test_aws_provider_version_returns_none_when_no_awscurrent_stage(mock_boto3_client):
+    """Test that get_secret_version returns None when VersionIdsToStages exists but has no AWSCURRENT stage."""
+    mock_client = MagicMock()
+    mock_boto3_client.return_value = mock_client
+
+    provider = AwsSecretsManagerProvider()
+    provider._client.describe_secret.return_value = {
+        "VersionIdsToStages": {
+            "v1": ["AWSPREVIOUS"],
+            "v2": ["AWSPENDING"]
+        }
+    }
+
+    result = provider.get_secret_version("test-secret")
+    assert result is None
