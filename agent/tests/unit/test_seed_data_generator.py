@@ -1,6 +1,8 @@
 import hashlib
 import json
 
+import pytest
+
 from autosentry_agent.seed_data.generator import generate
 from autosentry_agent.seed_data.structural_assertions import assert_structural_invariants
 
@@ -38,8 +40,5 @@ def test_structural_assertions_pass_on_valid_generation():
 def test_structural_assertions_catch_a_generator_with_no_mule_chains():
     result = generate(seed=42, scale="small")
     result.mule_chains = []
-    try:
+    with pytest.raises(AssertionError):
         assert_structural_invariants(result)
-        assert False, "expected AssertionError for zero mule chains"
-    except AssertionError:
-        pass
