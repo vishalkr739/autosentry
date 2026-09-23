@@ -1,4 +1,3 @@
-import os
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
@@ -6,6 +5,7 @@ from sqlalchemy import pool
 
 from alembic import context
 
+from autosentry_agent.config import get_secrets_provider
 from autosentry_agent.db.models import Base
 
 # this is the Alembic Config object, which provides
@@ -17,14 +17,18 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Read the database URL from an environment variable rather than a
-# hardcoded value in alembic.ini. Fall back to whatever is already set
-# on the Config object (e.g. a caller that set sqlalchemy.url directly,
-# as the integration test does) when DATABASE_URL isn't present.
-config.set_main_option(
-    "sqlalchemy.url",
-    os.environ.get("DATABASE_URL", config.get_main_option("sqlalchemy.url")),
-)
+# Read the database URL from SecretsProvider (Task 3's abstraction) only
+# when nobody has already set sqlalchemy.url explicitly, i.e. it is still
+# alembic.ini's literal placeholder (see alembic.ini:89). A caller such as
+# the integration test may call config.set_main_option("sqlalchemy.url",
+# ...) before this module runs; that explicit value must win over
+# DATABASE_URL, otherwise a developer with DATABASE_URL pointing at their
+# dev database would have it silently migrated instead of the test's
+# intended database.
+_PLACEHOLDER_URL = "driver://user:pass@localhost/dbname"
+_config_url = config.get_main_option("sqlalchemy.url")
+if not _config_url or _config_url == _PLACEHOLDER_URL:
+    config.set_main_option("sqlalchemy.url", get_secrets_provider().get_secret("DATABASE_URL"))
 
 # add your model's MetaData object here
 # for 'autogenerate' support

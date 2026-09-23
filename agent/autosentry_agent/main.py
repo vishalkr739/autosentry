@@ -1,9 +1,9 @@
-import os
 from typing import Callable
 
 from fastapi import FastAPI, Response
 from sqlalchemy import Engine, text
 
+from .config import get_secrets_provider
 from .db.session import get_engine
 
 
@@ -37,5 +37,5 @@ def create_app(engine: Engine, mcp_ready_check: Callable[[], bool]) -> FastAPI:
 # Real wiring used by the container's entrypoint (Task 1's Dockerfile CMD).
 # mcp_ready_check is a stub returning False until Tasks 5/6/7 are unblocked
 # and a real McpSessionManager.is_ready is wired in here instead.
-_engine = get_engine(os.environ["DATABASE_URL"])
+_engine = get_engine(get_secrets_provider().get_secret("DATABASE_URL"))
 app = create_app(engine=_engine, mcp_ready_check=lambda: False)
