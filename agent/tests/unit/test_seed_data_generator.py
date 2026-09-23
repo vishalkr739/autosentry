@@ -84,3 +84,30 @@ def test_owns_edges_connect_every_person_to_its_account():
     for person_id in person_ids:
         account_id = "account-" + person_id.split("-")[1]
         assert (person_id, account_id) in owns_pairs, f"missing OWNS edge for {person_id}"
+
+
+def test_mule_chain_hop_counts_match_actual_edges():
+    """Regression test for Finding 5: each mule chain's reported hop_count
+    must match a count independently derived by walking the chain's real
+    INITIATED/PAYS_TO_ACCOUNT edges in the generated graph, not merely
+    restate a value the generator assumed while building its own id
+    strings. This would catch a bug where the edges themselves were wrong
+    even if the summary's own bookkeeping still "added up"."""
+    result = generate(seed=42, scale="small")
+    assert result.mule_chains, "expected at least one mule chain"
+
+    for chain in result.mule_chains:
+        chain_tx_ids = {
+            e["id"]
+            for e in result.entities
+            if e["type"] == "Transaction" and e["id"].startswith(chain["chain_id"] + "-tx-")
+        }
+        accounts_in_chain = {
+            edge["from_id"]
+            for edge in result.edges
+            if edge["edge_type"] == "INITIATED" and edge["to_id"] in chain_tx_ids
+        }
+        assert len(accounts_in_chain) == chain["hop_count"], (
+            f"{chain['chain_id']}: reported hop_count {chain['hop_count']} does not match "
+            f"{len(accounts_in_chain)} accounts found by walking actual edges"
+        )

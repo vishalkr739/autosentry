@@ -37,7 +37,7 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
     ]
 
     mule_rng = np.random.default_rng(seed + 1)
-    mule_entities, mule_edges = generate_mule_chains(mule_rng, entities, scale_config, params)
+    mule_entities, mule_edges, mule_chain_summaries = generate_mule_chains(mule_rng, entities, scale_config, params)
 
     structuring_rng = np.random.default_rng(seed + 2)
     structuring_entities = generate_structuring_clusters(structuring_rng, entities, scale_config, params)
@@ -49,13 +49,5 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
     for edge in all_edges:
         assert edge["from_id"] in entity_ids, f"dangling edge reference: {edge['from_id']}"
         assert edge["to_id"] in entity_ids, f"dangling edge reference: {edge['to_id']}"
-
-    chains_by_prefix: dict[str, int] = {}
-    for e in mule_entities:
-        chain_id = "-".join(e["id"].split("-")[:3])
-        chains_by_prefix[chain_id] = chains_by_prefix.get(chain_id, 0) + 1
-    mule_chain_summaries = [
-        {"chain_id": chain_id, "hop_count": hop_count} for chain_id, hop_count in chains_by_prefix.items()
-    ]
 
     return GenerationResult(entities=all_entities, edges=all_edges, mule_chains=mule_chain_summaries)
