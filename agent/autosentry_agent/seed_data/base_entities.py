@@ -10,7 +10,7 @@ def sample_base_entities(rng: np.random.Generator, scale: ScaleConfig) -> list[d
     SecretsProvider, never vendored into the repo; this function accepts
     already-sampled index positions so it stays deterministic and
     testable without a network call in unit tests."""
-    entities = []
+    entities: list[dict[str, str | float]] = []
     for i in range(scale.person_count):
         person_id = f"person-{i:06d}"
         entities.append({"id": person_id, "type": "Person", "anonymized_ssn_hash": _hash_index(rng, i)})
