@@ -19,7 +19,7 @@ def generate_mule_chains(rng: np.random.Generator, entities: list[dict], scale: 
             new_edges.append({"from_id": account_id, "to_id": tx_id, "edge_type": "INITIATED"})
             chain_tx_ids.append(tx_id)
             if hop > 0:
-                new_edges.append({"from_id": chain_tx_ids[hop - 1], "to_id": account_id, "edge_type": "PAYS_PROXY"})
+                new_edges.append({"from_id": chain_tx_ids[hop - 1], "to_id": account_id, "edge_type": "PAYS_TO_ACCOUNT"})
 
     return new_entities, new_edges
 

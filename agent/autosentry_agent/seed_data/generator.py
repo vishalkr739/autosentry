@@ -28,6 +28,14 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
     base_rng = np.random.default_rng(seed)
     entities = sample_base_entities(base_rng, scale_config)
 
+    # Base entities are created in lockstep pairs: person-{i} and
+    # account-{i} for the same index i (see sample_base_entities). Every
+    # Person owns the Account created alongside it.
+    owns_edges = [
+        {"from_id": f"person-{i:06d}", "to_id": f"account-{i:06d}", "edge_type": "OWNS"}
+        for i in range(scale_config.person_count)
+    ]
+
     mule_rng = np.random.default_rng(seed + 1)
     mule_entities, mule_edges = generate_mule_chains(mule_rng, entities, scale_config, params)
 
@@ -35,7 +43,7 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
     structuring_entities = generate_structuring_clusters(structuring_rng, entities, scale_config, params)
 
     all_entities = entities + mule_entities + structuring_entities
-    all_edges = mule_edges
+    all_edges = mule_edges + owns_edges
 
     entity_ids = {e["id"] for e in all_entities}
     for edge in all_edges:
