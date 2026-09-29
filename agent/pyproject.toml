@@ -11,6 +11,7 @@ uvicorn = {extras = ["standard"], version = "^0.53.0"}
 langgraph = "^1.2.12"
 langchain = "^1.4.2"
 langchain-mcp-adapters = "^0.3.2"
+tigergraph-mcp = "^1.0.3"
 sqlalchemy = "^2.0.54"
 alembic = "^1.20.0"
 psycopg = {extras = ["binary"], version = "^3.3.6"}
@@ -24,6 +25,12 @@ pytest-asyncio = "^1.4.0"
 ruff = "^0.6"
 mypy = "^1.11"
 boto3-stubs = "^1.43.100"
+
+[[tool.mypy.overrides]]
+# tigergraph-mcp ships no py.typed marker; analyze its source anyway so
+# TigerGraphToolName (a plain str Enum) is genuinely type-checked.
+module = ["tigergraph_mcp", "tigergraph_mcp.*"]
+follow_untyped_imports = true
 
 [build-system]
 requires = ["poetry-core"]
