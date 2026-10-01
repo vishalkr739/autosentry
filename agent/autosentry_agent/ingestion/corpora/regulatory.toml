@@ -1,0 +1,137 @@
+# Global regulatory knowledge corpus (canonical spec: FATF/FinCEN/OFAC).
+# Every document is public and official. sha256 pins the exact file that was
+# reviewed; the driver refuses a download that doesn't match.
+#
+# FATF documents can't be downloaded programmatically (fatf-gafi.org serves
+# files behind a Cloudflare challenge). Save them from a browser as
+# agent/.corpus_cache/<doc_id>.pdf; the driver uses a cached file as-is and
+# only verifies its hash.
+
+graph = "AutosentryRegulatoryKB"
+
+[access]
+tenant_id = "global"
+roles = ["analyst"]
+
+[[documents]]
+doc_id = "fincen_imposter_money_mule_advisory_2020"
+title = "FIN-2020-A003: Advisory on Imposter Scams and Money Mule Schemes"
+url = "https://www.fincen.gov/system/files/advisory/2020-07-07/Advisory_%20Imposter_and_Money_Mule_COVID_19_508_FINAL.pdf"
+sha256 = "04a4d829270609de42b65e14cfe95bce6f6380a698f60da066077ec5fbf2cf20"
+doc_type = "advisory"
+source = "FinCEN"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "fincen_sar_faqs_2025"
+title = "FAQs Regarding Suspicious Activity Reporting (October 2025)"
+url = "https://www.fincen.gov/system/files/2025-10/SAR-FAQs-October-2025.pdf"
+sha256 = "5ed61b76f65ca1640f2d40e1afe3db40c77622620e81aefd08bc5273e0de4cac"
+doc_type = "guidance"
+source = "FinCEN"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "fincen_sar_narrative_guidance"
+title = "Guidance on Preparing a Complete & Sufficient SAR Narrative"
+url = "https://www.fincen.gov/system/files/shared/sarnarrcompletguidfinal_112003.pdf"
+sha256 = "937153099158eb92aa5dcd5c6d95967a17b4313bda19180baa908661f43c48c6"
+doc_type = "guidance"
+source = "FinCEN"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "fincen_elder_exploitation_advisory_2022"
+title = "FIN-2022-A002: Advisory on Elder Financial Exploitation"
+url = "https://www.fincen.gov/system/files/advisory/2022-06-15/FinCEN%20Advisory%20Elder%20Financial%20Exploitation%20FINAL%20508.pdf"
+sha256 = "23a4c35f1ffe2ea51b60f9fab2f795278e1eaa0d7ea1bcd58d9af0b595e74411"
+doc_type = "advisory"
+source = "FinCEN"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "fincen_elder_exploitation_trend_analysis"
+title = "Elder Financial Exploitation: Threat Pattern & Trend Information, June 2022 to June 2023"
+url = "https://www.fincen.gov/system/files/shared/FTA_Elder_Financial_Exploitation_508Final.pdf"
+sha256 = "3b28f08bf1be8d48d8cdf67550d0205ba4d658b4306c1e6c933a57f9e06eafba"
+doc_type = "trend_analysis"
+source = "FinCEN"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "fincen_identity_suspicious_activity_2021"
+title = "Identity-Related Suspicious Activity: 2021 Threats and Trends"
+url = "https://www.fincen.gov/system/files/shared/FTA_Identity_Final508.pdf"
+sha256 = "c92832a75e8330ef9c559b9b01739b5b5822b91b24afe5d56520f4520226234e"
+doc_type = "trend_analysis"
+source = "FinCEN"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "fincen_bec_advisory_2019"
+title = "FIN-2019-A005: Updated Advisory on Email Compromise Fraud Schemes"
+url = "https://www.fincen.gov/system/files/advisory/2019-07-16/Updated%20BEC%20Advisory%20FINAL%20508.pdf"
+sha256 = "bae4cd3d10b6bad1444e5299064a0cc3219ab32457a812a03c38b11bf088f838"
+doc_type = "advisory"
+source = "FinCEN"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "ofac_compliance_framework"
+title = "A Framework for OFAC Compliance Commitments"
+url = "https://ofac.treasury.gov/media/16331/download?inline="
+file_type = "pdf"
+sha256 = "a3279d0aaa6e49e7fa7ce68f22b31e3f571e9aa3d9fa2eeea0c26ee8c3ef128a"
+doc_type = "framework"
+source = "OFAC"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[documents]]
+doc_id = "ofac_instant_payments_guidance"
+title = "Sanctions Compliance Guidance for Instant Payment Systems"
+url = "https://ofac.treasury.gov/system/files/126/instant_payment_systems_compliance_guidance_brochure.pdf"
+sha256 = "b7662cb6db157b4e196f968cff526616b18845e78159408ae1c5c413632d61b5"
+doc_type = "guidance"
+source = "OFAC"
+jurisdiction = "US"
+classification = "PUBLIC"
+
+[[questions]]
+question = "What distinguishes an unwitting, a witting, and a complicit money mule?"
+expected_doc_id = "fincen_imposter_money_mule_advisory_2020"
+
+[[questions]]
+question = "Is a series of cash deposits just under $10,000 enough on its own to require a SAR for structuring?"
+expected_doc_id = "fincen_sar_faqs_2025"
+
+[[questions]]
+question = "What are the five essential elements a SAR narrative should cover?"
+expected_doc_id = "fincen_sar_narrative_guidance"
+
+[[questions]]
+question = "What two broad categories do elder financial exploitation schemes fall into?"
+expected_doc_id = "fincen_elder_exploitation_advisory_2022"
+
+[[questions]]
+question = "Which typology was most frequently reported in elder scam BSA filings?"
+expected_doc_id = "fincen_elder_exploitation_trend_analysis"
+
+[[questions]]
+question = "What share of identity-related BSA reports involved impersonation?"
+expected_doc_id = "fincen_identity_suspicious_activity_2021"
+
+[[questions]]
+question = "What are the five essential components of an OFAC sanctions compliance program?"
+expected_doc_id = "ofac_compliance_framework"
+
+[[questions]]
+question = "How should instant payment systems approach sanctions screening?"
+expected_doc_id = "ofac_instant_payments_guidance"

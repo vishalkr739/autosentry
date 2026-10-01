@@ -1,2 +1,9 @@
 # Claude-generated specs, plans, and other working documents are not tracked.
 docs/superpowers/
+
+# Downloaded corpus documents; the corpus TOML pins their sources and hashes.
+agent/.corpus_cache/
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
