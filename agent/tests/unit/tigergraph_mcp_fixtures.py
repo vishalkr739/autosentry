@@ -71,7 +71,7 @@ def get_graph_schema_data(
     schema: dict[str, Any] | None = None, graph_name: str = "MyGraph"
 ) -> dict[str, Any]:
     """The `data` field of a successful `get_graph_schema` envelope, i.e.
-    what `McpSessionManager.call_tool` returns for that tool."""
+    what `GraphDataMcpClient.call_data` returns for that tool."""
     schema = tigergraph_schema(graph_name=graph_name) if schema is None else schema
     return {
         "graph_name": graph_name,

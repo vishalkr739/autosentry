@@ -4,6 +4,9 @@ docs/superpowers/
 # Downloaded corpus documents; the corpus TOML pins their sources and hashes.
 agent/.corpus_cache/
 
+# Local environment and credentials; .env.example is the template.
+.env
+
 # Python bytecode caches
 __pycache__/
 *.py[cod]

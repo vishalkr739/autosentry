@@ -4,7 +4,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from tigergraph_mcp.tool_names import TigerGraphToolName
 
-from .session_manager import McpSessionManager
+from .transport import GraphDataMcpClient
 
 
 class GraphState(TypedDict):
@@ -13,10 +13,10 @@ class GraphState(TypedDict):
 
 
 def build_placeholder_graph(
-    session_manager: McpSessionManager,
+    client: GraphDataMcpClient,
 ) -> CompiledStateGraph[GraphState, None, GraphState, GraphState]:
     async def call_schema_tool(state: GraphState) -> GraphState:
-        data = await session_manager.call_tool(
+        data = await client.call_data(
             TigerGraphToolName.GET_GRAPH_SCHEMA.value, {"graph_name": state["graph_name"]}
         )
         # `get_graph_schema`'s envelope data is {"graph_name", "schema",

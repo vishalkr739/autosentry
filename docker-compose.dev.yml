@@ -9,12 +9,25 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
+  # tigergraph-mcp as its own service over streamable HTTP (the same shape as
+  # savanna-agent). It holds no credentials: each MCP session brings its
+  # TigerGraph identity in X-TG-* headers, so it must only be reachable from
+  # inside this network (published to localhost only, for local tools).
+  tigergraph-mcp:
+    build: ./agent  # the agent image already has tigergraph-mcp installed
+    command: ["tigergraph-mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8010"]
+    ports: ["127.0.0.1:8010:8010"]
+
   agent:
     build: ./agent
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://autosentry:autosentry@postgres:5432/autosentry_dev
       SECRETS_BACKEND: env
-    depends_on: [postgres]
+      GRAPH_DATA_MCP_URL: http://tigergraph-mcp:8010
+    depends_on: [postgres, tigergraph-mcp]
     ports: ["8000:8000"]
 
 volumes:
@@ -23,5 +36,5 @@ volumes:
 # web/ is not containerized (matches cloud-portal: static build, no
 # Dockerfile). Run it directly: `cd web && npm run dev`.
 #
-# tigergraph and graphrag services are added back to this file once
-# Tasks 5/6/7/9 (MCP-transport-dependent work) are unblocked.
+# TigerGraph itself is a TigerGraph Cloud workspace (TG_HOST in .env), and
+# graphrag runs from its own repo's Docker Compose (see its README).
