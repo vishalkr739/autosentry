@@ -2,7 +2,7 @@ import hashlib
 
 from tigergraph_mcp.tool_names import TigerGraphToolName
 
-from ..mcp.transport import GraphDataMcpClient
+from ..mcp.transport import GraphDataMcpClient, GraphDataToolError
 
 
 async def deploy_reference_schema(client: GraphDataMcpClient, schema_path: str) -> str:
@@ -16,8 +16,16 @@ async def deploy_reference_schema(client: GraphDataMcpClient, schema_path: str) 
     """
     with open(schema_path, encoding="utf-8") as f:
         gsql_text = f.read()
-    await client.call_data(TigerGraphToolName.GSQL.value, {"command": gsql_text})
-    return await compute_schema_hash(client)
+    result = await client.call_data(TigerGraphToolName.GSQL.value, {"command": gsql_text})
+    try:
+        return await compute_schema_hash(client)
+    except GraphDataToolError as exc:
+        # `gsql_has_error` only recognises some failure texts; a deploy it
+        # passes can still leave no graph behind, so check the outcome.
+        raise GraphDataToolError(
+            f"schema deploy reported success but {client.graph_name} is not readable "
+            f"({exc}); GSQL said: {(result or {}).get('result', '')!r}"
+        ) from exc
 
 
 async def compute_schema_hash(client: GraphDataMcpClient) -> str:

@@ -92,6 +92,22 @@ class TestDeployReferenceSchema:
         assert client.call_data.await_count == 1
 
 
+    async def test_a_deploy_that_leaves_no_graph_reports_what_gsql_said(self, tmp_path):
+        """tigergraph-mcp's gsql_has_error misses some failure texts, so a
+        'successful' deploy is checked by reading the graph back."""
+        schema_file = tmp_path / "reference_schema.gsql"
+        schema_file.write_text(GSQL_TEXT, encoding="utf-8")
+
+        client = make_client()
+        client.call_data.side_effect = [
+            gsql_data("Semantic Check Fails: type Person already exists"),
+            GraphDataToolError("tigergraph__get_graph_schema failed: 404 Not Found"),
+        ]
+
+        with pytest.raises(GraphDataToolError, match=r"(?s)not readable.*already exists"):
+            await deploy_reference_schema(client, str(schema_file))
+
+
 class TestComputeSchemaHash:
     async def test_returns_a_64_char_hex_sha256_hash(self):
         client = make_client()

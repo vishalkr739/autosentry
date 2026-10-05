@@ -7,6 +7,9 @@ agent/.corpus_cache/
 # Local environment and credentials; .env.example is the template.
 .env
 
+# Per-user Claude Code settings (local permission rules).
+.claude/settings.local.json
+
 # Python bytecode caches
 __pycache__/
 *.py[cod]
