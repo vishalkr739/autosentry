@@ -108,7 +108,7 @@ async def load_seed(
     reset: bool = False,
     batch_size: int = 500,
     schema: ReferenceSchema | None = None,
-    verify_timeout: float = 60.0,
+    verify_timeout: float = 180.0,
     verify_interval: float = 3.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -138,6 +138,9 @@ async def load_seed(
         elif reset:
             logger.warning("clearing all data in %s before loading", graph)
             await client.call_data(Tool.CLEAR_GRAPH_DATA.value, {"graph_name": graph, "confirm": True})
+            # TigerGraph applies the deletion asynchronously; loading while
+            # it is still being applied could lose freshly upserted data.
+            await _wait_until_empty(client, graph, vertices, clock() + verify_timeout, clock, sleep, verify_interval)
 
         for vertex_type, rows in vertices.items():
             for start in range(0, len(rows), batch_size):
@@ -176,6 +179,31 @@ async def load_seed(
             "If it holds another seed's data, load again with reset."
         )
     return report
+
+
+async def _wait_until_empty(
+    client: GraphDataMcpClient,
+    graph: str,
+    vertices: dict[str, list[dict]],
+    deadline: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
+    interval: float,
+) -> None:
+    while True:
+        remaining = {}
+        for vertex_type in vertices:
+            count = (await client.call_data(
+                Tool.GET_VERTEX_COUNT.value, {"graph_name": graph, "vertex_type": vertex_type}
+            ))["count"]
+            if count:
+                remaining[vertex_type] = count
+        if not remaining:
+            return
+        if clock() >= deadline:
+            raise SeedLoadError(f"{graph} still holds data after clearing it: {remaining}")
+        logger.info("waiting for the clear to finish (%d types not empty yet)", len(remaining))
+        await sleep(interval)
 
 
 async def _count_mismatches(

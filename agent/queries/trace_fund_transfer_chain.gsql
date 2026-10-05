@@ -1,0 +1,52 @@
+CREATE OR REPLACE QUERY trace_fund_transfer_chain(
+  VERTEX<Account> account,
+  INT max_hops = 6,
+  INT window_hours = 24,
+  DOUBLE min_forward_ratio = 0.8
+) FOR GRAPH AutosentrySandbox {
+  /* Follow money out of `account`, hop by hop. From the starting account
+     every outgoing transfer (p2p or wire) is followed; after that, a
+     receiving account's transfer only counts as the money moving on if it
+     leaves within `window_hours` of the money arriving and forwards at
+     least `min_forward_ratio` of it, which is how layering through mule
+     accounts looks. Cash-outs are transfers that pay an external
+     Beneficiary. */
+  TYPEDEF TUPLE<VERTEX from_account, VERTEX tx, DOUBLE amount, DATETIME sent_at, VERTEX to_account, INT hop> Hop;
+  TYPEDEF TUPLE<VERTEX from_account, VERTEX tx, DOUBLE amount, DATETIME sent_at, VERTEX beneficiary, INT hop> CashOut;
+  ListAccum<Hop> @@hops;
+  ListAccum<CashOut> @@cash_outs;
+  MinAccum<DATETIME> @received_at;
+  MaxAccum<DOUBLE> @received_amount;
+  OrAccum @is_start;
+  OrAccum @visited;
+  SetAccum<VERTEX> @sender;
+  SumAccum<INT> @@hop;
+
+  current = {account};
+  current = SELECT a FROM current:a POST-ACCUM a.@is_start = TRUE, a.@visited = TRUE;
+
+  WHILE current.size() > 0 AND @@hop < max_hops DO
+    @@hop += 1;
+    sent = SELECT t FROM current:a -(INITIATED>)- Transaction:t
+           WHERE (t.channel == "p2p" OR t.channel == "wire")
+             AND (a.@is_start OR (t.timestamp >= a.@received_at
+                  AND datetime_diff(t.timestamp, a.@received_at) <= window_hours * 3600
+                  AND t.amount >= a.@received_amount * min_forward_ratio
+                  AND t.amount <= a.@received_amount + 0.005))
+           ACCUM t.@sender += a;
+    cash = SELECT b FROM sent:t -(PAYS>)- Beneficiary:b
+           ACCUM FOREACH s IN t.@sender DO
+                   @@cash_outs += CashOut(s, t, t.amount, t.timestamp, b, @@hop)
+                 END;
+    current = SELECT n FROM sent:t -(PAYS_TO_ACCOUNT>)- Account:n
+              WHERE NOT n.@visited
+              ACCUM FOREACH s IN t.@sender DO
+                      @@hops += Hop(s, t, t.amount, t.timestamp, n, @@hop)
+                    END,
+                    n.@received_at += t.timestamp,
+                    n.@received_amount += t.amount
+              POST-ACCUM n.@visited = TRUE;
+  END;
+
+  PRINT @@hops AS hops, @@cash_outs AS cash_outs;
+}

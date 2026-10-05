@@ -30,6 +30,12 @@ class ActivityParameters:
     # accounts, so shared infrastructure alone doesn't single out a ring.
     public_ip_count: int = 3
     public_ip_users: int = 12
+    # Benign look-alikes of mule signals, so no single signal decides:
+    # ordinary accounts with a low KYC score, ones opened recently, and
+    # two-person households that share a device.
+    low_kyc_share: float = 0.08
+    new_account_share: float = 0.06
+    household_share: float = 0.05
 
 
 @dataclass(frozen=True)

@@ -133,15 +133,29 @@ def test_every_entity_and_edge_attribute_is_in_the_schema():
     assert {"OWNS", "INITIATED", "FROM_DEVICE", "FROM_IP", "AT", "PAYS", "PAYS_TO_ACCOUNT", "INVESTIGATED_IN"} <= set(edges)
 
 
-def test_mule_accounts_are_newer_and_lower_kyc_than_ordinary_ones():
+def test_mule_accounts_are_new_and_low_kyc_but_so_are_some_ordinary_ones():
+    """Each mule signal also appears on ordinary accounts, so no single
+    signal identifies a mule: the scenario has to be investigated."""
     result = generate(seed=42, scale="small")
     entities = _by_id(result)
     mules = set(result.ground_truth["mule_accounts"])
     ordinary = [e for e in result.entities if e["type"] == "Account" and e["id"] not in mules]
     assert mules
     assert all(entities[m]["kyc_score"] < 0.4 for m in mules)
-    assert all(a["kyc_score"] >= 0.4 for a in ordinary)
-    assert min(entities[m]["open_date"] for m in mules) > max(a["open_date"] for a in ordinary)
+    assert all(entities[m]["open_date"] >= "2026-06-01 00:00:00" for m in mules)
+    assert any(a["kyc_score"] < 0.4 for a in ordinary), "no ordinary low-KYC look-alikes"
+    assert any(a["open_date"] >= "2026-06-01 00:00:00" for a in ordinary), "no ordinary new accounts"
+
+
+def test_some_households_share_a_device_benignly():
+    result = generate(seed=42, scale="small")
+    ring_devices = {d for chain in result.ground_truth["mule_chains"] for d in chain["shared_devices"]}
+    initiator = {e["to_id"]: e["from_id"] for e in result.edges if e["edge_type"] == "INITIATED"}
+    users: dict[str, set[str]] = {}
+    for edge in result.edges:
+        if edge["edge_type"] == "FROM_DEVICE" and edge["to_id"] not in ring_devices:
+            users.setdefault(edge["to_id"], set()).add(initiator[edge["from_id"]])
+    assert any(len(accounts) == 2 for accounts in users.values())
 
 
 def test_no_transaction_predates_its_accounts_open_date():

@@ -4,6 +4,7 @@ WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 COPY autosentry_agent/ autosentry_agent/
 COPY schema/ schema/
+COPY queries/ queries/
 COPY alembic/ alembic/
 COPY alembic.ini ./
 RUN poetry config virtualenvs.create false \

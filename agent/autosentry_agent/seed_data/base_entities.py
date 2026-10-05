@@ -47,7 +47,13 @@ def sample_base_entities(
         person_id = f"person-{i:06d}"
         account_id = f"account-{i:06d}"
         # Most accounts predate the window; open_date is up to ~3 years back.
+        # A few ordinary ones were opened recently, inside the window.
         opened = -float(rng.uniform(0, 3 * 365 * 86_400))
+        if float(rng.uniform()) < activity.new_account_share:
+            opened = float(rng.uniform(0, window_seconds(activity) * 0.7))
+        kyc_score = float(rng.uniform(0.4, 1))
+        if float(rng.uniform()) < activity.low_kyc_share:
+            kyc_score = float(rng.uniform(0.15, 0.4))
         base.entities.append({
             "id": person_id,
             "type": "Person",
@@ -57,7 +63,7 @@ def sample_base_entities(
         account = {
             "id": account_id,
             "type": "Account",
-            "kyc_score": float(rng.uniform(0.4, 1)),
+            "kyc_score": kyc_score,
             "open_date": format_ts(activity, opened),
             "status": "active",
         }
@@ -82,6 +88,10 @@ def sample_base_entities(
                 "first_seen_at": format_ts(activity, opened),
             })
             devices.append(device_id)
+        # Two-person households: this person also uses the previous
+        # person's first device.
+        if i > 0 and float(rng.uniform()) < activity.household_share:
+            devices.append(f"device-{i - 1:06d}-0")
         base.devices_by_account[account_id] = devices
 
         ips = []

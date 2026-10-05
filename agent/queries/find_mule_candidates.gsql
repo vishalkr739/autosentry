@@ -1,0 +1,122 @@
+CREATE OR REPLACE QUERY find_mule_candidates(
+  INT top_k = 25,
+  INT min_score = 3,
+  INT window_hours = 24,
+  DOUBLE min_forward_ratio = 0.8,
+  INT max_shared_users = 10,
+  INT new_account_days = 60,
+  DOUBLE low_kyc = 0.4,
+  DOUBLE threshold = 1000.0,
+  DOUBLE margin = 50.0
+) FOR GRAPH AutosentrySandbox {
+  /* Rank accounts by how many money-mule signals they show, and say which:
+       rapid_forwarding (3)  received a transfer and sent most of it on within window_hours
+       cash_out (2)          sent a transfer that paid an external Beneficiary
+       shared_device (2)     transacted from a device 2..max_shared_users accounts share
+       shared_ip (1)         same, for an IP (more users than that looks like public Wi-Fi)
+       structuring (1)       3+ transactions just under the threshold within 7 days
+       new_account (1)       opened within new_account_days of the latest activity
+       low_kyc (1)           kyc_score below low_kyc
+     No single signal decides: an account needs min_score to be listed, and
+     every listed account comes with the transactions, devices and IPs
+     behind its signals. */
+  TYPEDEF TUPLE<VERTEX account, INT score, DOUBLE kyc_score, DATETIME open_date> Candidate;
+  TYPEDEF TUPLE<DOUBLE amount, DATETIME at> Receipt;
+  HeapAccum<Candidate>(top_k, score DESC) @@top;
+  ListAccum<Receipt> @received;
+  SetAccum<VERTEX> @forwarded;
+  SetAccum<VERTEX> @cash_out;
+  SetAccum<VERTEX> @near_threshold;
+  ListAccum<DATETIME> @near_times;
+  OrAccum @structuring;
+  SetAccum<VERTEX> @sender;
+  SetAccum<VERTEX> @users;
+  SumAccum<INT> @score;
+  ListAccum<STRING> @signals;
+  MaxAccum<DATETIME> @@latest;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@shared_devices_of;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@shared_ips_of;
+  MapAccum<VERTEX, ListAccum<STRING>> @@signals;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@forwarded_tx;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@cash_out_tx;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@near_threshold_tx;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@devices;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@ips;
+
+  all_tx = SELECT t FROM Transaction:t ACCUM @@latest += t.timestamp;
+  sent = SELECT t FROM all_tx:t -(reverse_INITIATED>)- Account:a ACCUM t.@sender += a;
+
+  /* rapid_forwarding */
+  received = SELECT a FROM Transaction:t -(PAYS_TO_ACCOUNT>)- Account:a
+             ACCUM a.@received += Receipt(t.amount, t.timestamp);
+  received = SELECT a FROM received:a -(INITIATED>)- Transaction:t
+             WHERE t.channel == "p2p" OR t.channel == "wire"
+             ACCUM FOREACH r IN a.@received DO
+                     IF t.timestamp >= r.at
+                        AND datetime_diff(t.timestamp, r.at) <= window_hours * 3600
+                        AND t.amount >= r.amount * min_forward_ratio
+                        AND t.amount <= r.amount + 0.005 THEN
+                       a.@forwarded += t
+                     END
+                   END;
+
+  /* cash_out */
+  cash_tx = SELECT t FROM Transaction:t -(PAYS>)- Beneficiary:b;
+  cashed = SELECT a FROM cash_tx:t -(reverse_INITIATED>)- Account:a ACCUM a.@cash_out += t;
+
+  /* shared_device, shared_ip */
+  devices = SELECT d FROM sent:t -(FROM_DEVICE>)- Device:d ACCUM d.@users += t.@sender;
+  devices = SELECT d FROM devices:d
+            WHERE d.@users.size() >= 2 AND d.@users.size() <= max_shared_users
+            POST-ACCUM FOREACH u IN d.@users DO @@shared_devices_of += (u -> d) END;
+  ips = SELECT i FROM sent:t -(FROM_IP>)- IPAddress:i ACCUM i.@users += t.@sender;
+  ips = SELECT i FROM ips:i
+        WHERE i.@users.size() >= 2 AND i.@users.size() <= max_shared_users
+        POST-ACCUM FOREACH u IN i.@users DO @@shared_ips_of += (u -> i) END;
+
+  /* structuring */
+  near = SELECT t FROM all_tx:t WHERE t.amount < threshold AND t.amount >= threshold - margin - 0.0001;
+  near_accounts = SELECT a FROM near:t -(reverse_INITIATED>)- Account:a
+                  ACCUM a.@near_threshold += t, a.@near_times += t.timestamp;
+  /* 3+ of them inside some 7-day window (the window slides). */
+  near_accounts = SELECT a FROM near_accounts:a WHERE a.@near_times.size() >= 3
+                  POST-ACCUM
+                    INT n = 0,
+                    FOREACH d IN a.@near_times DO
+                      n = 0,
+                      FOREACH e IN a.@near_times DO
+                        IF e >= d AND datetime_diff(e, d) <= 7 * 86400 THEN n = n + 1 END
+                      END,
+                      IF n >= 3 THEN a.@structuring += TRUE END
+                    END;
+
+  /* Score every account; accumulator updates land when this clause ends. */
+  accounts = SELECT a FROM Account:a
+    POST-ACCUM
+      IF a.@forwarded.size() > 0 THEN a.@score += 3, a.@signals += "rapid_forwarding" END,
+      IF a.@cash_out.size() > 0 THEN a.@score += 2, a.@signals += "cash_out" END,
+      IF @@shared_devices_of.containsKey(a) THEN a.@score += 2, a.@signals += "shared_device" END,
+      IF @@shared_ips_of.containsKey(a) THEN a.@score += 1, a.@signals += "shared_ip" END,
+      IF a.@structuring THEN a.@score += 1, a.@signals += "structuring" END,
+      IF datetime_diff(@@latest, a.open_date) <= new_account_days * 86400 THEN
+        a.@score += 1, a.@signals += "new_account"
+      END,
+      IF a.kyc_score < low_kyc THEN a.@score += 1, a.@signals += "low_kyc" END;
+
+  /* Collect the listed accounts and the evidence behind their signals. */
+  candidates = SELECT a FROM accounts:a WHERE a.@score >= min_score
+    POST-ACCUM @@top += Candidate(a, a.@score, a.kyc_score, a.open_date);
+  candidates = SELECT a FROM candidates:a
+    POST-ACCUM
+      @@signals += (a -> a.@signals),
+      IF a.@forwarded.size() > 0 THEN @@forwarded_tx += (a -> a.@forwarded) END,
+      IF a.@cash_out.size() > 0 THEN @@cash_out_tx += (a -> a.@cash_out) END,
+      IF a.@structuring THEN @@near_threshold_tx += (a -> a.@near_threshold) END,
+      IF @@shared_devices_of.containsKey(a) THEN @@devices += (a -> @@shared_devices_of.get(a)) END,
+      IF @@shared_ips_of.containsKey(a) THEN @@ips += (a -> @@shared_ips_of.get(a)) END;
+
+  PRINT @@top AS candidates, @@signals AS signals,
+        @@forwarded_tx AS forwarded_transactions, @@cash_out_tx AS cash_out_transactions,
+        @@near_threshold_tx AS near_threshold_transactions,
+        @@devices AS shared_devices, @@ips AS shared_ips;
+}

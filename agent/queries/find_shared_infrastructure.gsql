@@ -1,0 +1,56 @@
+CREATE OR REPLACE QUERY find_shared_infrastructure(
+  VERTEX<Account> account,
+  INT max_accounts_listed = 25
+) FOR GRAPH AutosentrySandbox {
+  /* The devices and IPs `account`'s transactions came from, and every
+     other account whose transactions used the same ones. `user_count` is
+     how many distinct accounts share each: a device used by a handful of
+     otherwise unrelated accounts is a ring signal, while an IP used by
+     dozens is more likely public Wi-Fi or carrier NAT. Lists of accounts
+     are capped at `max_accounts_listed`; the counts are not. */
+  TYPEDEF TUPLE<VERTEX device, INT user_count, DATETIME first_seen_at> SharedDevice;
+  TYPEDEF TUPLE<VERTEX ip, INT user_count, BOOL is_vpn, STRING country_code> SharedIp;
+  OrAccum @own;
+  SetAccum<VERTEX> @sender;
+  SetAccum<VERTEX> @users;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@accounts_by_device;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@accounts_by_ip;
+  ListAccum<SharedDevice> @@devices;
+  ListAccum<SharedIp> @@ips;
+
+  start = {account};
+  own_tx = SELECT t FROM start:a -(INITIATED>)- Transaction:t;
+  devices = SELECT d FROM own_tx:t -(FROM_DEVICE>)- Device:d POST-ACCUM d.@own = TRUE;
+  ips = SELECT i FROM own_tx:t -(FROM_IP>)- IPAddress:i POST-ACCUM i.@own = TRUE;
+
+  /* Every transaction from those devices and IPs, tagged with its sender. */
+  shared_tx = SELECT t FROM devices:d -(reverse_FROM_DEVICE>)- Transaction:t;
+  shared_tx = SELECT t FROM shared_tx:t -(reverse_INITIATED>)- Account:a ACCUM t.@sender += a;
+  devices = SELECT d FROM shared_tx:t -(FROM_DEVICE>)- Device:d
+            WHERE d.@own
+            ACCUM d.@users += t.@sender;
+
+  ip_tx = SELECT t FROM ips:i -(reverse_FROM_IP>)- Transaction:t;
+  ip_tx = SELECT t FROM ip_tx:t -(reverse_INITIATED>)- Account:a ACCUM t.@sender += a;
+  ips = SELECT i FROM ip_tx:t -(FROM_IP>)- IPAddress:i
+        WHERE i.@own
+        ACCUM i.@users += t.@sender;
+
+  devices = SELECT d FROM devices:d
+            POST-ACCUM @@devices += SharedDevice(d, d.@users.size(), d.first_seen_at),
+                       FOREACH u IN d.@users DO
+                         IF u != account AND @@accounts_by_device.get(d).size() < max_accounts_listed THEN
+                           @@accounts_by_device += (d -> u)
+                         END
+                       END;
+  ips = SELECT i FROM ips:i
+        POST-ACCUM @@ips += SharedIp(i, i.@users.size(), i.is_vpn, i.country_code),
+                   FOREACH u IN i.@users DO
+                     IF u != account AND @@accounts_by_ip.get(i).size() < max_accounts_listed THEN
+                       @@accounts_by_ip += (i -> u)
+                     END
+                   END;
+
+  PRINT @@devices AS devices, @@ips AS ips,
+        @@accounts_by_device AS accounts_by_device, @@accounts_by_ip AS accounts_by_ip;
+}

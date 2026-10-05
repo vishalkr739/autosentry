@@ -1,0 +1,47 @@
+CREATE OR REPLACE QUERY find_structuring_pattern(
+  DOUBLE threshold = 1000.0,
+  DOUBLE margin = 50.0,
+  INT min_count = 3,
+  INT window_days = 7
+) FOR GRAPH AutosentrySandbox {
+  /* Accounts with at least `min_count` transactions in
+     [threshold - margin, threshold) inside some `window_days` window:
+     amounts kept just under a reporting threshold, which is what
+     structuring looks like. The window slides, so an account with two
+     separate bursts weeks apart is still found. Any channel counts, not
+     only cash deposits. */
+  TYPEDEF TUPLE<VERTEX tx, DOUBLE amount, DATETIME made_at, STRING channel> Deposit;
+  TYPEDEF TUPLE<VERTEX account, INT max_in_window, DATETIME window_start, INT near_threshold_count, DOUBLE near_threshold_total> Cluster;
+  ListAccum<Deposit> @deposits;
+  SumAccum<DOUBLE> @total;
+  MaxAccum<INT> @best;
+  MinAccum<DATETIME> @window_start;
+  ListAccum<Cluster> @@clusters;
+  MapAccum<VERTEX, ListAccum<Deposit>> @@deposits_by_account;
+
+  /* The tolerance keeps an amount that is exactly threshold - margin in. */
+  near = SELECT t FROM Transaction:t
+         WHERE t.amount < threshold AND t.amount >= threshold - margin - 0.0001;
+  accounts = SELECT a FROM near:t -(reverse_INITIATED>)- Account:a
+             ACCUM a.@deposits += Deposit(t, t.amount, t.timestamp, t.channel), a.@total += t.amount
+             HAVING a.@deposits.size() >= min_count;
+  /* For each deposit, count those made within window_days after it. */
+  accounts = SELECT a FROM accounts:a
+             POST-ACCUM
+               INT n = 0,
+               FOREACH d IN a.@deposits DO
+                 n = 0,
+                 FOREACH e IN a.@deposits DO
+                   IF e.made_at >= d.made_at AND datetime_diff(e.made_at, d.made_at) <= window_days * 86400 THEN
+                     n = n + 1
+                   END
+                 END,
+                 IF n >= min_count THEN a.@best += n, a.@window_start += d.made_at END
+               END
+             HAVING a.@best >= min_count;
+  accounts = SELECT a FROM accounts:a
+             POST-ACCUM @@clusters += Cluster(a, a.@best, a.@window_start, a.@deposits.size(), a.@total),
+                        @@deposits_by_account += (a -> a.@deposits);
+
+  PRINT @@clusters AS clusters, @@deposits_by_account AS deposits_by_account;
+}
