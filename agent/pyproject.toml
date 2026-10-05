@@ -19,6 +19,7 @@ numpy = "^2.5.3"
 pydantic-settings = "^2.15.0"
 boto3 = "^1.43.99"
 mcp = "^1.30.0"
+langchain-openai = "^1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.3"

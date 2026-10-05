@@ -35,6 +35,32 @@ class GraphDataSettings(BaseSettings):
     tg_restpp_prefix: str = ""
 
 
+class LLMSettings(BaseSettings):
+    """The provider-agnostic chat model gateway: any OpenAI-compatible endpoint.
+
+    The default is Gemini through Google's OpenAI-compatible endpoint; Groq,
+    OpenAI, Anthropic or a local server are a change of these values. The
+    key is a secret (LLM_API_KEY) read through the SecretsProvider.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    llm_model: str = "gemini-2.5-flash"
+    llm_temperature: float = 0.0
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 1
+
+
+class KnowledgeSettings(BaseSettings):
+    """Where graphrag serves the regulatory corpus, and which corpus file describes it."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    graphrag_base_url: str = "http://localhost:8000"
+    knowledge_corpus: str = ""  # empty: the built-in regulatory corpus
+
+
 def get_secrets_provider() -> SecretsProvider:
     backend = os.environ.get("SECRETS_BACKEND", "env")
     if backend == "env":
