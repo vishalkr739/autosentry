@@ -201,6 +201,7 @@ async def _call_tool(
         result = await tool.invoke(args)
         emit({"type": "activity", "data": {
             "tool": name, "status": "done" if result["ok"] else "failed", "summary": result["summary"],
+            "error": result["error"],
         }})
     trace.record(
         "tool", name, step=step, ok=result["ok"], started=started,

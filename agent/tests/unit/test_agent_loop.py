@@ -119,8 +119,10 @@ async def test_failed_ad_hoc_queries_are_capped():
     calls: list[str] = []
     adhoc = fake_tool("run_graph_query", BAD, calls)
     llm = model(*(call("run_graph_query", {"query": "PRINT 1;"}, f"c{i}") for i in range(3)), AIMessage("Could not tell."))
-    await run_lane(lane(adhoc), llm, "Something odd")
+    events: list[dict] = []
+    await run_lane(lane(adhoc), llm, "Something odd", emit=events.append)
 
+    assert events[1]["data"] == {"tool": "run_graph_query", "status": "failed", "summary": "rejected", "error": "Type Check Error"}
     assert calls == ["run_graph_query", "run_graph_query"]  # the third was refused, not run
     third = json.loads(llm.seen[3][-1].content)
     assert "its limit" in third["error"]
