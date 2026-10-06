@@ -39,14 +39,43 @@ class ActivityParameters:
 
 
 @dataclass(frozen=True)
+class NetworkParameters:
+    """The network patterns beyond mule chains, and their innocent look-alikes."""
+
+    # Share of people who also own a second (savings) account.
+    second_account_share: float = 0.15
+    round_trip_min_accounts: int = 3
+    round_trip_max_accounts: int = 5
+    funnel_min_victims: int = 8
+    funnel_max_victims: int = 15
+    controller_min_payments: int = 4
+    controller_max_payments: int = 6
+    landlord_tenants: int = 3
+
+
+@dataclass(frozen=True)
 class ScaleConfig:
     person_count: int
     mule_chain_count: int
     structuring_cluster_count: int
     ato_timeline_count: int
+    round_trip_count: int = 0
+    funnel_count: int = 0
+    controller_count: int = 0
+    family_pair_count: int = 0
+    business_count: int = 0
+    landlord_count: int = 0
 
 
 SCALE_PRESETS = {
-    "small": ScaleConfig(person_count=200, mule_chain_count=5, structuring_cluster_count=5, ato_timeline_count=3),
-    "large": ScaleConfig(person_count=20_000, mule_chain_count=500, structuring_cluster_count=500, ato_timeline_count=300),
+    "small": ScaleConfig(
+        person_count=200, mule_chain_count=5, structuring_cluster_count=5, ato_timeline_count=3,
+        round_trip_count=3, funnel_count=2, controller_count=2,
+        family_pair_count=3, business_count=1, landlord_count=1,
+    ),
+    "large": ScaleConfig(
+        person_count=20_000, mule_chain_count=500, structuring_cluster_count=500, ato_timeline_count=300,
+        round_trip_count=300, funnel_count=200, controller_count=200,
+        family_pair_count=300, business_count=100, landlord_count=100,
+    ),
 }

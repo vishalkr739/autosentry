@@ -79,15 +79,23 @@ def seed() -> GenerationResult:
     return generate(seed=42, scale="small")
 
 
+def count(seed: GenerationResult, vertex_type: str) -> int:
+    return sum(1 for e in seed.entities if e["type"] == vertex_type)
+
+
+def edge_count(seed: GenerationResult, edge_type: str) -> int:
+    return sum(1 for e in seed.edges if e["edge_type"] == edge_type)
+
+
 @pytest.mark.asyncio
 async def test_loads_into_an_existing_graph_and_verifies_counts(seed):
     fake = FakeGraphData()
     report = await load_seed(fake, seed)
 
     assert report.deployed_schema is False
-    assert report.vertex_counts["Account"] == 200
-    assert report.vertex_counts["Transaction"] == sum(1 for e in seed.entities if e["type"] == "Transaction")
-    assert report.edge_counts["PAYS"] == 5
+    assert report.vertex_counts["Account"] == count(seed, "Account")
+    assert report.vertex_counts["Transaction"] == count(seed, "Transaction")
+    assert report.edge_counts["PAYS"] == edge_count(seed, "PAYS")
     assert len(report.schema_hash) == 64 and len(report.data_hash) == 64
     assert "gsql" not in fake.tools_called() and "clear_graph_data" not in fake.tools_called()
     assert fake.sessions == 1  # the whole load runs in one MCP session
@@ -107,11 +115,12 @@ async def test_reset_clears_the_graph_only_when_asked(seed):
     fake = FakeGraphData()
     fake.vertices["Account"].add("account-from-an-old-seed")
 
-    with pytest.raises(SeedLoadError, match="Account: expected 200, graph has 201"):
+    accounts = count(seed, "Account")
+    with pytest.raises(SeedLoadError, match=f"Account: expected {accounts}, graph has {accounts + 1}"):
         await load_seed(fake, seed, verify_timeout=0)
 
     report = await load_seed(fake, seed, reset=True)
-    assert report.reset is True and report.vertex_counts["Account"] == 200
+    assert report.reset is True and report.vertex_counts["Account"] == accounts
     assert fake.tools_called().count("clear_graph_data") == 1
 
 
@@ -139,7 +148,7 @@ async def test_batches_and_payload_shapes(seed):
     node_calls = [args for tool, args in fake.calls if tool.endswith("add_nodes")]
     edge_calls = [args for tool, args in fake.calls if tool.endswith("add_edges")]
     assert all(len(args["vertices"]) <= 100 for args in node_calls)
-    assert sum(len(a["vertices"]) for a in node_calls if a["vertex_type"] == "Account") == 200
+    assert sum(len(a["vertices"]) for a in node_calls if a["vertex_type"] == "Account") == count(seed, "Account")
     account = next(a for a in node_calls if a["vertex_type"] == "Account")["vertices"][0]
     assert set(account) == {"id", "kyc_score", "open_date", "status"}
     assert all(args["graph_name"] == "AutosentrySandbox" for args in node_calls + edge_calls)
@@ -177,7 +186,7 @@ async def test_waits_for_lagging_counts_to_settle(seed):
     report = await load_seed(
         fake, seed, verify_timeout=60, verify_interval=3, clock=time.clock, sleep=time.sleep
     )
-    assert report.vertex_counts["Account"] == 200
+    assert report.vertex_counts["Account"] == count(seed, "Account")
     assert time.slept == [3, 3]
 
 
@@ -186,7 +195,7 @@ async def test_gives_up_when_counts_never_settle(seed):
     fake = FakeGraphData()
     fake.drop_edges_of = "PAYS"
     time = FakeTime()
-    with pytest.raises(SeedLoadError, match="PAYS: expected 5, graph has 0"):
+    with pytest.raises(SeedLoadError, match=f"PAYS: expected {edge_count(seed, 'PAYS')}, graph has 0"):
         await load_seed(fake, seed, verify_timeout=9, verify_interval=3, clock=time.clock, sleep=time.sleep)
     assert time.now >= 9
 

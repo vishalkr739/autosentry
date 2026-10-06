@@ -4,7 +4,8 @@ import numpy as np
 
 from .background import generate_background_activity
 from .base_entities import format_ts, sample_base_entities, window_seconds
-from .config import SCALE_PRESETS, ActivityParameters, PatternParameters
+from .config import SCALE_PRESETS, ActivityParameters, NetworkParameters, PatternParameters
+from .network_patterns import add_second_accounts, generate_network_patterns
 from .patterns import generate_mule_chains, generate_structuring_clusters
 
 
@@ -37,6 +38,8 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
     activity = ActivityParameters()
 
     base = sample_base_entities(np.random.default_rng(seed), scale_config, activity)
+    network = NetworkParameters()
+    multi_account_owners = add_second_accounts(np.random.default_rng(seed + 4), base, activity, network)
 
     # Mule rings come before background activity, since they re-date their
     # accounts' open_date and background activity must not predate it.
@@ -47,6 +50,13 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
 
     structuring_entities, structuring_edges, structuring_truth = generate_structuring_clusters(
         np.random.default_rng(seed + 2), base, mule_accounts, scale_config, params, activity
+    )
+
+    # Every account given a role so far is off limits to the network
+    # patterns, so each ground-truth entry is about one behaviour.
+    used = set(mule_accounts) | {c["account"] for c in structuring_truth}
+    network_result = generate_network_patterns(
+        np.random.default_rng(seed + 5), base, scale_config, activity, network, used, chain_truth
     )
 
     background_entities, background_edges = generate_background_activity(
@@ -72,8 +82,11 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
             "role": "subject",
         })
 
-    all_entities = base.entities + mule_entities + structuring_entities + background_entities + case_entities
-    all_edges = base.edges + mule_edges + structuring_edges + background_edges + case_edges
+    all_entities = (
+        base.entities + mule_entities + structuring_entities + network_result.entities
+        + background_entities + case_entities
+    )
+    all_edges = base.edges + mule_edges + structuring_edges + network_result.edges + background_edges + case_edges
 
     entity_ids = {e["id"] for e in all_entities}
     assert len(entity_ids) == len(all_entities), "duplicate entity id"
@@ -86,6 +99,8 @@ def generate(seed: int, scale: str = "small") -> GenerationResult:
         "mule_chains": chain_truth,
         "structuring_clusters": structuring_truth,
         "case": {"case_id": "case-0001", "subject": case_subject} if case_subject else None,
+        "multi_account_owners": multi_account_owners,
+        **network_result.truth,
     }
     return GenerationResult(
         entities=all_entities,

@@ -1,0 +1,99 @@
+CREATE OR REPLACE QUERY find_connected_accounts(
+  VERTEX<Account> account,
+  INT max_hops = 2,
+  INT max_shared_users = 10,
+  INT max_accounts = 50
+) FOR GRAPH AutosentrySandbox {
+  /* The accounts around `account`, up to `max_hops` links away, and how
+     each is connected. A link is one of:
+       transfer          one paid the other (p2p or wire), via the transaction
+       same_owner        the same person owns both, via the person
+       shared_device     both transacted from a device that 2..max_shared_users
+                         people use, via the device (more looks like a kiosk)
+       shared_ip         the same, for an IP (more looks like public Wi-Fi)
+       same_beneficiary  both paid the same external beneficiary, via it
+     Sharing is counted in people, not accounts, so one person's own
+     accounts on their own phone are not a shared device. Expansion stops
+     adding accounts once `max_accounts` are reached; links between the
+     accounts already found are still reported. */
+  TYPEDEF TUPLE<VERTEX from_account, VERTEX to_account, STRING link, VERTEX via, INT distance> Link;
+  TYPEDEF TUPLE<VERTEX account, INT distance> Reached;
+  SetAccum<Link> @@links;
+  SetAccum<VERTEX<Account>> @@next;
+  ListAccum<Reached> @@reached;
+  MinAccum<INT> @distance = GSQL_INT_MAX;
+  SetAccum<VERTEX<Account>> @from;
+  SetAccum<VERTEX<Account>> @sent_by;
+  SetAccum<VERTEX<Account>> @paid_to;
+  SetAccum<VERTEX<Account>> @users;
+  SetAccum<VERTEX> @owners;
+  SumAccum<INT> @@hop;
+  SumAccum<INT> @@found;
+
+  INT room = 0;
+
+  frontier = {account};
+  frontier = SELECT a FROM frontier:a POST-ACCUM a.@distance = 0, @@reached += Reached(a, 0);
+  @@found += 1;
+
+  WHILE frontier.size() > 0 AND @@hop < max_hops DO
+    @@hop += 1;
+    @@next.clear();
+
+    /* transfer, both directions */
+    out_tx = SELECT t FROM frontier:a -(INITIATED>)- Transaction:t
+             WHERE t.channel == "p2p" OR t.channel == "wire"
+             ACCUM t.@sent_by += a;
+    paid = SELECT n FROM out_tx:t -(PAYS_TO_ACCOUNT>)- Account:n
+           ACCUM FOREACH a IN t.@sent_by DO @@links += Link(a, n, "transfer", t, @@hop), @@next += n END;
+    in_tx = SELECT t FROM frontier:a -(reverse_PAYS_TO_ACCOUNT>)- Transaction:t
+            WHERE t.channel == "p2p" OR t.channel == "wire"
+            ACCUM t.@paid_to += a;
+    payers = SELECT n FROM in_tx:t -(reverse_INITIATED>)- Account:n
+             ACCUM FOREACH a IN t.@paid_to DO @@links += Link(n, a, "transfer", t, @@hop), @@next += n END;
+
+    /* same_owner */
+    people = SELECT p FROM frontier:a -(OWNS)- Person:p ACCUM p.@from += a;
+    siblings = SELECT n FROM people:p -(OWNS)- Account:n
+               ACCUM FOREACH a IN p.@from DO
+                       IF a != n THEN @@links += Link(a, n, "same_owner", p, @@hop), @@next += n END
+                     END;
+
+    /* shared_device, shared_ip, same_beneficiary: what the frontier used... */
+    touched = SELECT x FROM out_tx:t -((FROM_DEVICE>|FROM_IP>|PAYS>))- (Device|IPAddress|Beneficiary):x
+              ACCUM x.@from += t.@sent_by;
+    /* ...every account, and its owner, that used the same... */
+    touched = SELECT x FROM touched:x -((reverse_FROM_DEVICE>|reverse_FROM_IP>|reverse_PAYS>))- Transaction:t
+                         -(reverse_INITIATED>)- Account:n -(OWNS)- Person:p
+              ACCUM x.@users += n, x.@owners += p;
+    /* ...linked when it is private enough to mean something. */
+    shared = SELECT x FROM touched:x
+             WHERE x.type == "Beneficiary"
+                OR (x.@owners.size() >= 2 AND x.@owners.size() <= max_shared_users)
+             POST-ACCUM
+               STRING kind = "same_beneficiary",
+               IF x.type == "Device" THEN kind = "shared_device" END,
+               IF x.type == "IPAddress" THEN kind = "shared_ip" END,
+               FOREACH a IN x.@from DO
+                 FOREACH n IN x.@users DO
+                   IF a != n THEN @@links += Link(a, n, kind, x, @@hop), @@next += n END
+                 END
+               END;
+
+    /* Reset this step's tags, then admit the new accounts, up to the cap. */
+    out_tx = SELECT t FROM out_tx:t POST-ACCUM t.@sent_by.clear();
+    in_tx = SELECT t FROM in_tx:t POST-ACCUM t.@paid_to.clear();
+    people = SELECT p FROM people:p POST-ACCUM p.@from.clear();
+    touched = SELECT x FROM touched:x POST-ACCUM x.@from.clear(), x.@users.clear(), x.@owners.clear();
+    room = max_accounts - @@found;
+    IF room < 0 THEN room = 0; END;
+    frontier = {@@next};
+    frontier = SELECT n FROM frontier:n WHERE n.@distance == GSQL_INT_MAX
+               POST-ACCUM n.@distance = @@hop
+               ORDER BY getvid(n) ASC LIMIT room;
+    frontier = SELECT n FROM frontier:n POST-ACCUM @@reached += Reached(n, @@hop);
+    @@found += frontier.size();
+  END;
+
+  PRINT @@reached AS accounts, @@links AS links;
+}

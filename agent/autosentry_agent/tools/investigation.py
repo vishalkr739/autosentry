@@ -25,8 +25,11 @@ class _Input(BaseModel):
 
 
 class FindMuleCandidatesInput(_Input):
+    account: AccountId | None = Field(
+        None, description="Score just this account (whatever its score); omit to rank the whole graph"
+    )
     top_k: int = Field(25, ge=1, le=100, description="How many accounts to return, highest score first")
-    min_score: int = Field(3, ge=1, le=11, description="Minimum combined signal score to be listed")
+    min_score: int = Field(3, ge=1, le=16, description="Minimum combined signal score to be listed")
     window_hours: int = Field(24, ge=1, le=168, description="How soon forwarding must follow a receipt")
 
 
@@ -66,10 +69,14 @@ def _printed(data: Any) -> dict[str, Any]:
     return merged
 
 
-async def _run(client: GraphDataMcpClient, query: str, params: BaseModel) -> dict[str, Any] | str:
+async def _run(
+    client: GraphDataMcpClient, query: str, params: BaseModel | dict[str, Any]
+) -> dict[str, Any] | str:
+    """Run an installed query; `params` is its input model, or just the fields the query takes."""
+    arguments = params.model_dump() if isinstance(params, BaseModel) else params
     result = await client.call(
         Tool.RUN_INSTALLED_QUERY.value,
-        {"graph_name": client.graph_name, "query_name": query, "params": params.model_dump()},
+        {"graph_name": client.graph_name, "query_name": query, "params": arguments},
     )
     if not result["ok"]:
         return result["error"] or f"{query} failed"
@@ -85,7 +92,11 @@ def _result(summary: str, data: Any, fields: dict[str, str]) -> InvestigationRes
 
 def investigation_tools(client: GraphDataMcpClient) -> list[ToolSpec]:
     async def find_mule_candidates(params: FindMuleCandidatesInput) -> InvestigationResult:
-        printed = await _run(client, "find_mule_candidates", params)
+        query_params = params.model_dump(exclude={"account"})
+        query_params["accounts"] = [params.account] if params.account else []
+        if params.account:
+            query_params["min_score"] = 0
+        printed = await _run(client, "find_mule_candidates", query_params)
         if isinstance(printed, str):
             return failure("find_mule_candidates failed", printed)
 
@@ -111,7 +122,14 @@ def investigation_tools(client: GraphDataMcpClient) -> list[ToolSpec]:
                 "signals": list(signals.get(account, [])),
                 **{name: values.get(account, []) for name, values in evidence_maps.items()},
             })
-        if not candidates:
+        if params.account:
+            found = candidates[0] if candidates else None
+            summary = (
+                f"{params.account} scores {found['score']} of 16 on mule signals"
+                + (f": {', '.join(found['signals'])}" if found["signals"] else ": none")
+                if found else f"{params.account} was not found"
+            )
+        elif not candidates:
             summary = f"no account scored {params.min_score}+ on mule signals"
         else:
             top = candidates[0]

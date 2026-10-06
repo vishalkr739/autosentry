@@ -140,6 +140,18 @@ async def test_mule_candidates_carry_their_own_signals_and_evidence_only():
 
 
 @pytest.mark.asyncio
+async def test_mule_candidates_can_score_one_account_whatever_its_score():
+    client = FakeClient()
+    result = await tools(client)["find_mule_candidates"].invoke({"account": "account-m1"})
+    params = client.calls[0][1]["params"]
+    assert params["accounts"] == ["account-m1"] and params["min_score"] == 0 and "account" not in params
+    assert result["summary"] == "account-m1 scores 10 of 16 on mule signals: rapid_forwarding, cash_out, shared_device"
+
+    await tools(client)["find_mule_candidates"].invoke({})
+    assert client.calls[1][1]["params"]["accounts"] == [] and client.calls[1][1]["params"]["min_score"] == 3
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("tool", "arguments", "problem"),
     [

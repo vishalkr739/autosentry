@@ -56,10 +56,11 @@ async def test_knowledge_search_failure_is_not_ok_rather_than_raised():
     assert result["ok"] is False and "graphrag down" in result["error"]
 
 
-def test_the_library_holds_the_four_investigation_queries_for_the_sandbox():
+def test_the_library_holds_the_investigation_queries_for_the_sandbox():
     queries = load_library()
     assert {q.name for q in queries} == {
         "find_mule_candidates", "trace_fund_transfer_chain", "find_shared_infrastructure", "find_structuring_pattern",
+        "find_circular_flows", "find_repeated_counterparties", "find_connected_accounts", "find_fraud_networks",
     }
     assert {q.graph for q in queries} == {"AutosentrySandbox"}
 

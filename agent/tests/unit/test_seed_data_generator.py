@@ -212,3 +212,43 @@ def test_ground_truth_is_part_of_the_deterministic_output():
     a, b = generate(seed=42, scale="small"), generate(seed=42, scale="small")
     assert a.ground_truth == b.ground_truth
     assert a.ground_truth["mule_accounts"] != generate(seed=43, scale="small").ground_truth["mule_accounts"]
+
+
+def test_network_patterns_and_their_look_alikes_are_seeded():
+    truth = generate(seed=42, scale="small").ground_truth
+    assert len(truth["round_trips"]) == 3 and len(truth["funnels"]) == 2
+    assert len(truth["controller_payments"]) == 4  # two ring members for each of two rings
+    assert truth["family_pairs"] and truth["businesses"] and truth["landlords"]
+    roles = [
+        *(a for c in truth["round_trips"] for a in c["accounts"]),
+        *(f["account"] for f in truth["funnels"]),
+        *(a for p in truth["family_pairs"] for a in p["accounts"]),
+        *(b["account"] for b in truth["businesses"]),
+    ]
+    assert len(roles) == len(set(roles)), "an account was given two pattern roles"
+    assert not set(roles) & set(truth["mule_accounts"])
+
+
+def test_second_accounts_share_their_owners_devices():
+    result = generate(seed=42, scale="small")
+    owners = result.ground_truth["multi_account_owners"]
+    assert owners
+    person, (first, second) = next(iter(owners.items()))
+    owned = {e["to_id"] for e in result.edges if e["edge_type"] == "OWNS" and e["from_id"] == person}
+    assert owned == {first, second}
+
+
+def test_controllers_are_paid_by_ring_members():
+    truth = generate(seed=42, scale="small").ground_truth
+    rings = {c["chain_id"]: set(c["accounts"]) for c in truth["mule_chains"]}
+    for stream in truth["controller_payments"]:
+        assert stream["from"] in rings[stream["chain_id"]]
+        assert stream["to"] not in rings[stream["chain_id"]]
+
+
+def test_structural_assertions_catch_a_round_trip_that_never_returns():
+    result = generate(seed=42, scale="small")
+    last = result.ground_truth["round_trips"][0]["transactions"][-1]
+    result.edges = [e for e in result.edges if not (e["from_id"] == last and e["edge_type"] == "PAYS_TO_ACCOUNT")]
+    with pytest.raises(AssertionError, match="pays the wrong account"):
+        assert_structural_invariants(result)

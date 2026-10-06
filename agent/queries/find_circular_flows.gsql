@@ -1,0 +1,57 @@
+CREATE OR REPLACE QUERY find_circular_flows(
+  INT max_hops = 6,
+  INT window_days = 7
+) FOR GRAPH AutosentrySandbox {
+  /* Find money that comes back to the account it left (round-tripping).
+     Every transfer (p2p or wire) starts a search; the money is followed
+     onward only by transfers the receiving account makes after it
+     arrived, and only while still within `window_days` of the start. A
+     start whose money reaches its own sender again within `max_hops` is
+     a loop. Every hop of a loop's search is printed; the caller rebuilds
+     the time-ordered paths and checks how much of the money came back. */
+  TYPEDEF TUPLE<VERTEX origin, VERTEX start_tx, DATETIME start_at> Key;
+  TYPEDEF TUPLE<VERTEX start_tx, VERTEX from_account, VERTEX tx, DOUBLE amount, DATETIME sent_at, VERTEX to_account, INT hop> Hop;
+  ListAccum<Hop> @@hops;
+  ListAccum<Hop> @@loop_hops;
+  SetAccum<VERTEX> @@closed;
+  MapAccum<VERTEX, MinAccum<DATETIME>> @arrived;
+  SetAccum<Key> @fresh;
+  SetAccum<Key> @carry;
+  SetAccum<VERTEX> @sender;
+  SumAccum<INT> @@hop;
+
+  accounts = {Account.*};
+  sent = SELECT t FROM accounts:a -(INITIATED>)- Transaction:t
+         WHERE t.channel == "p2p" OR t.channel == "wire"
+         ACCUM t.@sender += a, t.@carry += Key(a, t, t.timestamp);
+
+  WHILE sent.size() > 0 AND @@hop < max_hops DO
+    @@hop += 1;
+    /* Where each carried start's money lands; back at its origin closes a loop. */
+    reached = SELECT n FROM sent:t -(PAYS_TO_ACCOUNT>)- Account:n
+              ACCUM FOREACH k IN t.@carry DO
+                      FOREACH s IN t.@sender DO
+                        @@hops += Hop(k.start_tx, s, t, t.amount, t.timestamp, n, @@hop)
+                      END,
+                      IF n == k.origin THEN @@closed += k.start_tx END,
+                      IF n != k.origin THEN n.@fresh += k, n.@arrived += (k.start_tx -> t.timestamp) END
+                    END;
+    sent = SELECT t FROM sent:t POST-ACCUM t.@carry.clear(), t.@sender.clear();
+    /* The money moves on only in transfers made after it arrived, inside the window. */
+    sent = SELECT t FROM reached:a -(INITIATED>)- Transaction:t
+           WHERE t.channel == "p2p" OR t.channel == "wire"
+           ACCUM FOREACH k IN a.@fresh DO
+                   IF t.timestamp >= a.@arrived.get(k.start_tx)
+                      AND datetime_diff(t.timestamp, k.start_at) <= window_days * 86400 THEN
+                     t.@carry += k, t.@sender += a
+                   END
+                 END
+           HAVING t.@carry.size() > 0;
+    reached = SELECT a FROM reached:a POST-ACCUM a.@fresh.clear();
+  END;
+
+  FOREACH h IN @@hops DO
+    IF @@closed.contains(h.start_tx) THEN @@loop_hops += h; END;
+  END;
+  PRINT @@loop_hops AS hops;
+}

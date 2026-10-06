@@ -1,4 +1,5 @@
 CREATE OR REPLACE QUERY find_mule_candidates(
+  SET<VERTEX<Account>> accounts,
   INT top_k = 25,
   INT min_score = 3,
   INT window_hours = 24,
@@ -7,21 +8,36 @@ CREATE OR REPLACE QUERY find_mule_candidates(
   INT new_account_days = 60,
   DOUBLE low_kyc = 0.4,
   DOUBLE threshold = 1000.0,
-  DOUBLE margin = 50.0
+  DOUBLE margin = 50.0,
+  INT min_counterparties = 5,
+  INT fan_window_days = 7,
+  INT loop_max_hops = 6,
+  INT loop_window_days = 7
 ) FOR GRAPH AutosentrySandbox {
   /* Rank accounts by how many money-mule signals they show, and say which:
        rapid_forwarding (3)  received a transfer and sent most of it on within window_hours
        cash_out (2)          sent a transfer that paid an external Beneficiary
-       shared_device (2)     transacted from a device 2..max_shared_users accounts share
+       round_trip (2)        sent money that came back to it within loop_max_hops
+                             transfers and loop_window_days (as find_circular_flows)
+       funnel (2)            received from min_counterparties+ distinct senders within
+                             fan_window_days (as find_repeated_counterparties' fan-in)
+       shared_device (2)     transacted from a device 2..max_shared_users people share
        shared_ip (1)         same, for an IP (more users than that looks like public Wi-Fi)
        structuring (1)       3+ transactions just under the threshold within 7 days
        new_account (1)       opened within new_account_days of the latest activity
        low_kyc (1)           kyc_score below low_kyc
+       near_known_fraud (1)  shares a private device or IP with, or exchanged a
+                             transfer with, an account under investigation
+     Sharing is counted in people, so one person's own accounts on their own
+     phone are not a shared device. The maximum score is 16.
      No single signal decides: an account needs min_score to be listed, and
      every listed account comes with the transactions, devices and IPs
-     behind its signals. */
+     behind its signals. Given `accounts`, only those are listed (scored
+     against the whole graph as usual). */
   TYPEDEF TUPLE<VERTEX account, INT score, DOUBLE kyc_score, DATETIME open_date> Candidate;
   TYPEDEF TUPLE<DOUBLE amount, DATETIME at> Receipt;
+  TYPEDEF TUPLE<VERTEX counterparty, DATETIME at> Inflow;
+  TYPEDEF TUPLE<VERTEX origin, VERTEX start_tx, DATETIME start_at> LoopKey;
   HeapAccum<Candidate>(top_k, score DESC) @@top;
   ListAccum<Receipt> @received;
   SetAccum<VERTEX> @forwarded;
@@ -31,6 +47,19 @@ CREATE OR REPLACE QUERY find_mule_candidates(
   OrAccum @structuring;
   SetAccum<VERTEX> @sender;
   SetAccum<VERTEX> @users;
+  SetAccum<VERTEX> @owners;
+  ListAccum<Inflow> @inflows;
+  MapAccum<DATETIME, SetAccum<VERTEX>> @in_window;
+  SetAccum<VERTEX> @funnel_senders;
+  MapAccum<VERTEX, MinAccum<DATETIME>> @arrived;
+  SetAccum<LoopKey> @fresh;
+  SetAccum<LoopKey> @carry;
+  SetAccum<VERTEX> @loop_tx;
+  SetAccum<VERTEX> @@case_accounts;
+  SetAccum<VERTEX> @@near_fraud;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@round_trip_tx;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@funnel_from;
+  SumAccum<INT> @@loop_hop;
   SumAccum<INT> @score;
   ListAccum<STRING> @signals;
   MaxAccum<DATETIME> @@latest;
@@ -65,14 +94,72 @@ CREATE OR REPLACE QUERY find_mule_candidates(
   cashed = SELECT a FROM cash_tx:t -(reverse_INITIATED>)- Account:a ACCUM a.@cash_out += t;
 
   /* shared_device, shared_ip */
-  devices = SELECT d FROM sent:t -(FROM_DEVICE>)- Device:d ACCUM d.@users += t.@sender;
+  investigated = SELECT a FROM Account:a -(INVESTIGATED_IN>)- InvestigationCase:c
+                 ACCUM @@case_accounts += a;
+  devices = SELECT d FROM Person:p -(OWNS)- Account:a -(INITIATED>)- Transaction:t -(FROM_DEVICE>)- Device:d
+            ACCUM d.@users += a, d.@owners += p;
   devices = SELECT d FROM devices:d
-            WHERE d.@users.size() >= 2 AND d.@users.size() <= max_shared_users
-            POST-ACCUM FOREACH u IN d.@users DO @@shared_devices_of += (u -> d) END;
-  ips = SELECT i FROM sent:t -(FROM_IP>)- IPAddress:i ACCUM i.@users += t.@sender;
+            WHERE d.@owners.size() >= 2 AND d.@owners.size() <= max_shared_users
+            POST-ACCUM FOREACH u IN d.@users DO
+                         @@shared_devices_of += (u -> d),
+                         IF @@case_accounts.contains(u) THEN @@near_fraud += d.@users END
+                       END;
+  ips = SELECT i FROM Person:p -(OWNS)- Account:a -(INITIATED>)- Transaction:t -(FROM_IP>)- IPAddress:i
+        ACCUM i.@users += a, i.@owners += p;
   ips = SELECT i FROM ips:i
-        WHERE i.@users.size() >= 2 AND i.@users.size() <= max_shared_users
-        POST-ACCUM FOREACH u IN i.@users DO @@shared_ips_of += (u -> i) END;
+        WHERE i.@owners.size() >= 2 AND i.@owners.size() <= max_shared_users
+        POST-ACCUM FOREACH u IN i.@users DO
+                     @@shared_ips_of += (u -> i),
+                     IF @@case_accounts.contains(u) THEN @@near_fraud += i.@users END
+                   END;
+
+  /* near_known_fraud, by transfer: paid, or was paid by, an account under investigation. */
+  cased = {@@case_accounts};
+  near = SELECT n FROM cased:a -(INITIATED>)- Transaction:t -(PAYS_TO_ACCOUNT>)- Account:n
+         ACCUM @@near_fraud += n;
+  near = SELECT n FROM cased:a -(reverse_PAYS_TO_ACCOUNT>)- Transaction:t -(reverse_INITIATED>)- Account:n
+         ACCUM @@near_fraud += n;
+
+  /* funnel: distinct senders in each window that starts at a receipt. */
+  funnels = SELECT n FROM Account:s -(INITIATED>)- Transaction:t -(PAYS_TO_ACCOUNT>)- Account:n
+            WHERE t.channel == "p2p" OR t.channel == "wire"
+            ACCUM n.@inflows += Inflow(s, t.timestamp);
+  funnels = SELECT n FROM funnels:n WHERE n.@inflows.size() >= min_counterparties
+            POST-ACCUM FOREACH f IN n.@inflows DO
+              FOREACH g IN n.@inflows DO
+                IF g.at >= f.at AND datetime_diff(g.at, f.at) <= fan_window_days * 86400 THEN
+                  n.@in_window += (f.at -> g.counterparty)
+                END
+              END
+            END;
+  funnels = SELECT n FROM funnels:n
+            POST-ACCUM FOREACH (d, senders) IN n.@in_window DO
+              IF senders.size() >= min_counterparties THEN n.@funnel_senders += senders END
+            END;
+
+  /* round_trip: the find_circular_flows search, keeping whose money came back. */
+  loop_sent = SELECT t FROM Account:a -(INITIATED>)- Transaction:t
+              WHERE t.channel == "p2p" OR t.channel == "wire"
+              ACCUM t.@carry += LoopKey(a, t, t.timestamp);
+  WHILE loop_sent.size() > 0 AND @@loop_hop < loop_max_hops DO
+    @@loop_hop += 1;
+    reached = SELECT n FROM loop_sent:t -(PAYS_TO_ACCOUNT>)- Account:n
+              ACCUM FOREACH k IN t.@carry DO
+                      IF n == k.origin THEN n.@loop_tx += k.start_tx END,
+                      IF n != k.origin THEN n.@fresh += k, n.@arrived += (k.start_tx -> t.timestamp) END
+                    END;
+    loop_sent = SELECT t FROM loop_sent:t POST-ACCUM t.@carry.clear();
+    loop_sent = SELECT t FROM reached:a -(INITIATED>)- Transaction:t
+                WHERE t.channel == "p2p" OR t.channel == "wire"
+                ACCUM FOREACH k IN a.@fresh DO
+                        IF t.timestamp >= a.@arrived.get(k.start_tx)
+                           AND datetime_diff(t.timestamp, k.start_at) <= loop_window_days * 86400 THEN
+                          t.@carry += k
+                        END
+                      END
+                HAVING t.@carry.size() > 0;
+    reached = SELECT a FROM reached:a POST-ACCUM a.@fresh.clear();
+  END;
 
   /* structuring */
   near = SELECT t FROM all_tx:t WHERE t.amount < threshold AND t.amount >= threshold - margin - 0.0001;
@@ -91,20 +178,26 @@ CREATE OR REPLACE QUERY find_mule_candidates(
                     END;
 
   /* Score every account; accumulator updates land when this clause ends. */
-  accounts = SELECT a FROM Account:a
+  scored = SELECT a FROM Account:a
     POST-ACCUM
       IF a.@forwarded.size() > 0 THEN a.@score += 3, a.@signals += "rapid_forwarding" END,
       IF a.@cash_out.size() > 0 THEN a.@score += 2, a.@signals += "cash_out" END,
+      IF a.@loop_tx.size() > 0 THEN a.@score += 2, a.@signals += "round_trip" END,
+      IF a.@funnel_senders.size() > 0 THEN a.@score += 2, a.@signals += "funnel" END,
       IF @@shared_devices_of.containsKey(a) THEN a.@score += 2, a.@signals += "shared_device" END,
       IF @@shared_ips_of.containsKey(a) THEN a.@score += 1, a.@signals += "shared_ip" END,
       IF a.@structuring THEN a.@score += 1, a.@signals += "structuring" END,
       IF datetime_diff(@@latest, a.open_date) <= new_account_days * 86400 THEN
         a.@score += 1, a.@signals += "new_account"
       END,
-      IF a.kyc_score < low_kyc THEN a.@score += 1, a.@signals += "low_kyc" END;
+      IF a.kyc_score < low_kyc THEN a.@score += 1, a.@signals += "low_kyc" END,
+      IF @@near_fraud.contains(a) AND NOT @@case_accounts.contains(a) THEN
+        a.@score += 1, a.@signals += "near_known_fraud"
+      END;
 
   /* Collect the listed accounts and the evidence behind their signals. */
-  candidates = SELECT a FROM accounts:a WHERE a.@score >= min_score
+  candidates = SELECT a FROM scored:a
+               WHERE a.@score >= min_score AND (accounts.size() == 0 OR accounts.contains(a))
     POST-ACCUM @@top += Candidate(a, a.@score, a.kyc_score, a.open_date);
   candidates = SELECT a FROM candidates:a
     POST-ACCUM
@@ -112,11 +205,14 @@ CREATE OR REPLACE QUERY find_mule_candidates(
       IF a.@forwarded.size() > 0 THEN @@forwarded_tx += (a -> a.@forwarded) END,
       IF a.@cash_out.size() > 0 THEN @@cash_out_tx += (a -> a.@cash_out) END,
       IF a.@structuring THEN @@near_threshold_tx += (a -> a.@near_threshold) END,
+      IF a.@loop_tx.size() > 0 THEN @@round_trip_tx += (a -> a.@loop_tx) END,
+      IF a.@funnel_senders.size() > 0 THEN @@funnel_from += (a -> a.@funnel_senders) END,
       IF @@shared_devices_of.containsKey(a) THEN @@devices += (a -> @@shared_devices_of.get(a)) END,
       IF @@shared_ips_of.containsKey(a) THEN @@ips += (a -> @@shared_ips_of.get(a)) END;
 
   PRINT @@top AS candidates, @@signals AS signals,
         @@forwarded_tx AS forwarded_transactions, @@cash_out_tx AS cash_out_transactions,
         @@near_threshold_tx AS near_threshold_transactions,
+        @@round_trip_tx AS round_trip_transactions, @@funnel_from AS funnel_senders,
         @@devices AS shared_devices, @@ips AS shared_ips;
 }

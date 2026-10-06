@@ -30,3 +30,46 @@ def assert_structural_invariants(result) -> None:
         for tx in cluster["transactions"]:
             assert tx in edges_from.get((cluster["account"], "INITIATED"), set()), f"{tx} has no account"
             assert entities[tx]["amount"] < 1000.0, f"{tx} is not under the reporting threshold"
+
+    _assert_network_patterns(result.ground_truth, entities, edges_from)
+
+
+def _payee(edges_from, tx: str) -> str | None:
+    targets = edges_from.get((tx, "PAYS_TO_ACCOUNT"), set()) | edges_from.get((tx, "PAYS"), set())
+    return next(iter(targets), None)
+
+
+def _assert_network_patterns(truth: dict, entities: dict, edges_from: dict) -> None:
+    from datetime import datetime
+
+    def at(tx: str) -> datetime:
+        return datetime.fromisoformat(entities[tx]["timestamp"])
+
+    for cycle in truth.get("round_trips", []):
+        accounts, txs = cycle["accounts"], cycle["transactions"]
+        times = [at(tx) for tx in txs]
+        assert times == sorted(times), f"{cycle['cycle_id']}: hops out of time order"
+        for hop, tx in enumerate(txs):
+            assert tx in edges_from.get((accounts[hop], "INITIATED"), set()), f"{tx} not sent by its hop"
+            assert _payee(edges_from, tx) == accounts[(hop + 1) % len(accounts)], f"{tx} pays the wrong account"
+        assert (times[-1] - times[0]).days < 7, f"{cycle['cycle_id']}: loop takes a week or more"
+        assert entities[txs[-1]]["amount"] >= 0.5 * entities[txs[0]]["amount"], f"{cycle['cycle_id']}: loses half"
+
+    for funnel in truth.get("funnels", []):
+        assert len(set(funnel["victims"])) == len(funnel["inbound"]) >= 5, "a funnel needs 5+ distinct senders"
+        inbound_times = [at(tx) for tx in funnel["inbound"]]
+        assert (max(inbound_times) - min(inbound_times)).days < 7, "funnel inflows span a week or more"
+        assert _payee(edges_from, funnel["cash_out"]) == funnel["beneficiary"], "funnel cash-out pays elsewhere"
+        assert at(funnel["cash_out"]) > max(inbound_times), "funnel cashes out before the money arrives"
+
+    for stream in truth.get("controller_payments", []) + truth.get("landlords", []):
+        assert len(stream["transactions"]) >= 3, f"{stream['from']}->{stream['to']}: not repeated"
+        assert all(_payee(edges_from, tx) == stream["to"] for tx in stream["transactions"])
+
+    for pair in truth.get("family_pairs", []):
+        times = sorted(at(tx) for tx in pair["transactions"])
+        assert all((b - a).days >= 7 for a, b in zip(times, times[1:])), "family transfers too close together"
+
+    for business in truth.get("businesses", []):
+        times = sorted(at(tx) for tx in business["transactions"])
+        assert (times[-1] - times[0]).days >= 30, "business income is not spread out"

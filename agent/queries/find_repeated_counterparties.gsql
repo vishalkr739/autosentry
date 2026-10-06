@@ -1,0 +1,110 @@
+CREATE OR REPLACE QUERY find_repeated_counterparties(
+  INT min_transfers = 3,
+  INT pair_window_days = 30,
+  INT min_counterparties = 5,
+  INT fan_window_days = 7
+) FOR GRAPH AutosentrySandbox {
+  /* Who keeps paying whom, and who suddenly deals with many others.
+       repeated pair  one account paid the same payee min_transfers+ times
+                      within pair_window_days (monthly rent never gets there)
+       fan-in         an account received from min_counterparties+ distinct
+                      senders within fan_window_days (a funnel; a business
+                      paid over months never gets there)
+       fan-out        an account paid min_counterparties+ distinct payees
+                      within fan_window_days (dispersal)
+     Payees are accounts or external beneficiaries; only p2p and wire
+     transfers count. Windows slide, and each fan is reported for its
+     busiest window with the transfers inside it. */
+  TYPEDEF TUPLE<VERTEX counterparty, STRING counterparty_type, VERTEX tx, DOUBLE amount, DATETIME at> Flow;
+  TYPEDEF TUPLE<VERTEX from_account, VERTEX to_party, STRING to_type, VERTEX tx, DOUBLE amount, DATETIME sent_at> Transfer;
+  TYPEDEF TUPLE<VERTEX party, STRING party_type, STRING direction, INT counterparties, DATETIME window_start> Fan;
+  SetAccum<VERTEX> @sender;
+  SetAccum<VERTEX> @payee;
+  MaxAccum<STRING> @payee_type;
+  ListAccum<Flow> @in;
+  ListAccum<Flow> @out;
+  SetAccum<VERTEX> @repeated_payees;
+  MapAccum<DATETIME, SetAccum<VERTEX>> @in_window;
+  MapAccum<DATETIME, SetAccum<VERTEX>> @out_window;
+  ListAccum<Transfer> @@pair_transfers;
+  ListAccum<Fan> @@fans;
+  ListAccum<Transfer> @@fan_transfers;
+
+  sent = SELECT t FROM Account:a -(INITIATED>)- Transaction:t
+         WHERE t.channel == "p2p" OR t.channel == "wire"
+         ACCUM t.@sender += a;
+  receivers = SELECT n FROM sent:t -((PAYS_TO_ACCOUNT>|PAYS>))- (Account|Beneficiary):n
+              ACCUM t.@payee += n, t.@payee_type += n.type,
+                    FOREACH s IN t.@sender DO n.@in += Flow(s, "Account", t, t.amount, t.timestamp) END;
+  senders = SELECT a FROM sent:t -(reverse_INITIATED>)- Account:a
+            WHERE t.@payee.size() > 0
+            ACCUM FOREACH p IN t.@payee DO a.@out += Flow(p, t.@payee_type, t, t.amount, t.timestamp) END;
+
+  /* Repeated pairs: min_transfers+ to one payee inside some window. */
+  pairs = SELECT a FROM senders:a WHERE a.@out.size() >= min_transfers
+    POST-ACCUM
+      INT n = 0,
+      FOREACH f IN a.@out DO
+        n = 0,
+        FOREACH g IN a.@out DO
+          IF g.counterparty == f.counterparty AND g.at >= f.at
+             AND datetime_diff(g.at, f.at) <= pair_window_days * 86400 THEN n = n + 1 END
+        END,
+        IF n >= min_transfers THEN a.@repeated_payees += f.counterparty END
+      END;
+  pairs = SELECT a FROM pairs:a WHERE a.@repeated_payees.size() > 0
+    POST-ACCUM FOREACH f IN a.@out DO
+      IF a.@repeated_payees.contains(f.counterparty) THEN
+        @@pair_transfers += Transfer(a, f.counterparty, f.counterparty_type, f.tx, f.amount, f.at)
+      END
+    END;
+
+  /* Fans: distinct counterparties in each window that starts at a transfer. */
+  fan_in = SELECT a FROM receivers:a WHERE a.@in.size() >= min_counterparties
+    POST-ACCUM FOREACH f IN a.@in DO
+      FOREACH g IN a.@in DO
+        IF g.at >= f.at AND datetime_diff(g.at, f.at) <= fan_window_days * 86400 THEN
+          a.@in_window += (f.at -> g.counterparty)
+        END
+      END
+    END;
+  fan_in = SELECT a FROM fan_in:a
+    POST-ACCUM
+      INT best = 0, DATETIME best_at = a.@in.get(0).at,
+      FOREACH (d, s) IN a.@in_window DO
+        IF s.size() > best THEN best = s.size(), best_at = d END
+      END,
+      IF best >= min_counterparties THEN
+        @@fans += Fan(a, a.type, "in", best, best_at),
+        FOREACH f IN a.@in DO
+          IF f.at >= best_at AND datetime_diff(f.at, best_at) <= fan_window_days * 86400 THEN
+            @@fan_transfers += Transfer(f.counterparty, a, a.type, f.tx, f.amount, f.at)
+          END
+        END
+      END;
+
+  fan_out = SELECT a FROM senders:a WHERE a.@out.size() >= min_counterparties
+    POST-ACCUM FOREACH f IN a.@out DO
+      FOREACH g IN a.@out DO
+        IF g.at >= f.at AND datetime_diff(g.at, f.at) <= fan_window_days * 86400 THEN
+          a.@out_window += (f.at -> g.counterparty)
+        END
+      END
+    END;
+  fan_out = SELECT a FROM fan_out:a
+    POST-ACCUM
+      INT best = 0, DATETIME best_at = a.@out.get(0).at,
+      FOREACH (d, s) IN a.@out_window DO
+        IF s.size() > best THEN best = s.size(), best_at = d END
+      END,
+      IF best >= min_counterparties THEN
+        @@fans += Fan(a, "Account", "out", best, best_at),
+        FOREACH f IN a.@out DO
+          IF f.at >= best_at AND datetime_diff(f.at, best_at) <= fan_window_days * 86400 THEN
+            @@fan_transfers += Transfer(a, f.counterparty, f.counterparty_type, f.tx, f.amount, f.at)
+          END
+        END
+      END;
+
+  PRINT @@pair_transfers AS pair_transfers, @@fans AS fans, @@fan_transfers AS fan_transfers;
+}

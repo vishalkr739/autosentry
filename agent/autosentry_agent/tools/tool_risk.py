@@ -24,6 +24,10 @@ AUTOSENTRY_READ_TOOLS = frozenset(
         "trace_fund_transfer_chain",
         "find_shared_infrastructure",
         "find_structuring_pattern",
+        "find_circular_flows",
+        "find_repeated_counterparties",
+        "find_connected_accounts",
+        "find_fraud_networks",
         "search_knowledge",
         "run_graph_query",
     }

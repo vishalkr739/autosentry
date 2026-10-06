@@ -1,0 +1,104 @@
+CREATE OR REPLACE QUERY find_fraud_networks(
+  INT window_hours = 24,
+  DOUBLE min_forward_ratio = 0.8,
+  INT max_shared_users = 10,
+  INT min_transfers = 3,
+  INT pair_window_days = 30
+) FOR GRAPH AutosentrySandbox {
+  /* The links that tie accounts into a network, across the whole graph.
+     The caller groups accounts joined by any of them into networks.
+       pass_through       a paid n, and n sent most of it on within window_hours
+                          (at least min_forward_ratio of it): layering
+       repeated_payments  a paid n min_transfers+ times within pair_window_days
+       shared devices     a device 2..max_shared_users people transacted from,
+                          with the accounts that used it (likewise IPs)
+       same owner         a person who owns 2+ accounts, with the accounts
+       same beneficiary   an external beneficiary 2+ accounts paid
+     Sharing is counted in people, so one person's own accounts on their
+     own phone are not a shared device. Accounts under investigation are
+     listed with their cases. */
+  TYPEDEF TUPLE<VERTEX from_account, VERTEX to_account, STRING link, VERTEX tx> Link;
+  TYPEDEF TUPLE<VERTEX from_account, VERTEX tx, DOUBLE amount, DATETIME at> Receipt;
+  TYPEDEF TUPLE<VERTEX counterparty, VERTEX tx, DATETIME at> Flow;
+  ListAccum<Link> @@links;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@device_accounts;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@ip_accounts;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@owner_accounts;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@beneficiary_accounts;
+  MapAccum<VERTEX, SetAccum<VERTEX>> @@cases;
+  SetAccum<VERTEX> @sender;
+  SetAccum<VERTEX> @payee;
+  ListAccum<Receipt> @received;
+  ListAccum<Flow> @out;
+  SetAccum<VERTEX> @repeated_payees;
+  SetAccum<VERTEX> @accounts;
+  SetAccum<VERTEX> @owners;
+
+  transfers = SELECT t FROM Account:a -(INITIATED>)- Transaction:t
+              WHERE t.channel == "p2p" OR t.channel == "wire"
+              ACCUM t.@sender += a;
+
+  /* pass_through: a receipt the receiver forwards most of, soon after. */
+  receivers = SELECT n FROM transfers:t -(PAYS_TO_ACCOUNT>)- Account:n
+              ACCUM t.@payee += n,
+                    FOREACH s IN t.@sender DO n.@received += Receipt(s, t, t.amount, t.timestamp) END;
+  receivers = SELECT n FROM receivers:n -(INITIATED>)- Transaction:u
+              WHERE u.channel == "p2p" OR u.channel == "wire"
+              ACCUM FOREACH r IN n.@received DO
+                      IF u.timestamp >= r.at
+                         AND datetime_diff(u.timestamp, r.at) <= window_hours * 3600
+                         AND u.amount >= r.amount * min_forward_ratio
+                         AND u.amount <= r.amount + 0.005 THEN
+                        @@links += Link(r.from_account, n, "pass_through", r.tx)
+                      END
+                    END;
+
+  /* repeated_payments: min_transfers+ to one payee inside some window. */
+  payers = SELECT a FROM transfers:t -(reverse_INITIATED>)- Account:a
+           WHERE t.@payee.size() > 0
+           ACCUM FOREACH p IN t.@payee DO a.@out += Flow(p, t, t.timestamp) END;
+  payers = SELECT a FROM payers:a WHERE a.@out.size() >= min_transfers
+    POST-ACCUM
+      INT n = 0,
+      FOREACH f IN a.@out DO
+        n = 0,
+        FOREACH g IN a.@out DO
+          IF g.counterparty == f.counterparty AND g.at >= f.at
+             AND datetime_diff(g.at, f.at) <= pair_window_days * 86400 THEN n = n + 1 END
+        END,
+        IF n >= min_transfers THEN a.@repeated_payees += f.counterparty END
+      END;
+  payers = SELECT a FROM payers:a WHERE a.@repeated_payees.size() > 0
+    POST-ACCUM FOREACH f IN a.@out DO
+      IF a.@repeated_payees.contains(f.counterparty) THEN
+        @@links += Link(a, f.counterparty, "repeated_payments", f.tx)
+      END
+    END;
+
+  /* Devices, IPs and beneficiaries, with the accounts and people using each. */
+  devices = SELECT d FROM Person:p -(OWNS)- Account:a -(INITIATED>)- Transaction:t -(FROM_DEVICE>)- Device:d
+            ACCUM d.@accounts += a, d.@owners += p;
+  devices = SELECT d FROM devices:d
+            WHERE d.@owners.size() >= 2 AND d.@owners.size() <= max_shared_users
+            POST-ACCUM @@device_accounts += (d -> d.@accounts);
+  ips = SELECT i FROM Person:p -(OWNS)- Account:a -(INITIATED>)- Transaction:t -(FROM_IP>)- IPAddress:i
+        ACCUM i.@accounts += a, i.@owners += p;
+  ips = SELECT i FROM ips:i
+        WHERE i.@owners.size() >= 2 AND i.@owners.size() <= max_shared_users
+        POST-ACCUM @@ip_accounts += (i -> i.@accounts);
+  beneficiaries = SELECT b FROM Account:a -(INITIATED>)- Transaction:t -(PAYS>)- Beneficiary:b
+                  ACCUM b.@accounts += a;
+  beneficiaries = SELECT b FROM beneficiaries:b WHERE b.@accounts.size() >= 2
+                  POST-ACCUM @@beneficiary_accounts += (b -> b.@accounts);
+
+  owners = SELECT p FROM Person:p -(OWNS)- Account:a ACCUM p.@accounts += a;
+  owners = SELECT p FROM owners:p WHERE p.@accounts.size() >= 2
+           POST-ACCUM @@owner_accounts += (p -> p.@accounts);
+
+  investigated = SELECT a FROM Account:a -(INVESTIGATED_IN>)- InvestigationCase:c
+                 ACCUM @@cases += (a -> c);
+
+  PRINT @@links AS links, @@device_accounts AS device_accounts, @@ip_accounts AS ip_accounts,
+        @@owner_accounts AS owner_accounts, @@beneficiary_accounts AS beneficiary_accounts,
+        @@cases AS cases;
+}
